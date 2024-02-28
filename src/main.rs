@@ -88,9 +88,12 @@ async fn handle(conn: TcpStream, socks5addr: &str) {
     if _method == "CONNECT" {
         // CONNECT www.baidu.com:443 HTTP/1.1
         // https
-        let (mut conn, _domain) = read_until(conn, ' ').await;
+        let (mut conn, mut _domain) = read_until(conn, ' ').await;
         conn.read(&mut [0u8; 1024]).await.unwrap();
         log::info!("dst->https://{}", _domain);
+        if !_domain.contains(":") {
+            _domain.push_str(":443");
+        }
         // 响应
         conn.write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).await.unwrap();
         // 转换为socks5代理
@@ -102,8 +105,11 @@ async fn handle(conn: TcpStream, socks5addr: &str) {
         // http
         let (mut conn, _) = read_until(conn, '/').await;
         _ = conn.read_u8().await.unwrap();
-        let (mut conn, _domain) = read_until(conn, '/').await;
+        let (mut conn, mut _domain) = read_until(conn, '/').await;
         log::info!("dst->http://{}", _domain);
+        if !_domain.contains(":") {
+            _domain.push_str(":80");
+        }
         // 转换为socks5代理
         if let Some(mut dst) = get_sock5_conn(socks5addr, &_domain).await {
             dst.write_all(_method.as_bytes()).await.unwrap();
