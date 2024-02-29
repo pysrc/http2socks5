@@ -1,7 +1,7 @@
 use std::{fs::File, io::Read, str::FromStr};
 
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, select};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
@@ -97,15 +97,29 @@ async fn handle(conn: TcpStream, socks5addr: &str) {
         // 响应
         conn.write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes()).await.unwrap();
         // 转换为socks5代理
-        if let Some(mut dst) = get_sock5_conn(socks5addr, &_domain).await {
-            tokio::io::copy_bidirectional(&mut conn, &mut dst).await.unwrap();
+        if let Some(dst) = get_sock5_conn(socks5addr, &_domain).await {
+            let (mut rxx, mut txx) = tokio::io::split(conn);
+            let (mut rstream, mut wstream) = tokio::io::split(dst);
+            select! {
+                _ = async {
+                    tokio::io::copy(&mut rxx, &mut wstream).await
+                } => {},
+                _ = async {
+                    tokio::io::copy(&mut rstream, &mut txx).await
+                } => {}
+            }
+            _ = wstream.flush().await;
+            _ = wstream.shutdown().await;
+            _ = txx.flush().await;
+            _ = txx.shutdown().await;
+            log::info!("stop dst: {}", _domain);
         }
     } else {
         // GET http://127.0.0.1:8000/ HTTP/1.1
         // http
         let (mut conn, _) = read_until(conn, '/').await;
         _ = conn.read_u8().await.unwrap();
-        let (mut conn, mut _domain) = read_until(conn, '/').await;
+        let (conn, mut _domain) = read_until(conn, '/').await;
         log::info!("dst->http://{}", _domain);
         if !_domain.contains(":") {
             _domain.push_str(":80");
@@ -115,7 +129,21 @@ async fn handle(conn: TcpStream, socks5addr: &str) {
             dst.write_all(_method.as_bytes()).await.unwrap();
             dst.write_u8(' ' as u8).await.unwrap();
             dst.write_u8('/' as u8).await.unwrap();
-            tokio::io::copy_bidirectional(&mut conn, &mut dst).await.unwrap();
+            let (mut rxx, mut txx) = tokio::io::split(conn);
+            let (mut rstream, mut wstream) = tokio::io::split(dst);
+            select! {
+                _ = async {
+                    tokio::io::copy(&mut rxx, &mut wstream).await
+                } => {},
+                _ = async {
+                    tokio::io::copy(&mut rstream, &mut txx).await
+                } => {}
+            }
+            _ = wstream.flush().await;
+            _ = wstream.shutdown().await;
+            _ = txx.flush().await;
+            _ = txx.shutdown().await;
+            log::info!("stop dst: {}", _domain);
         }
     }
 }
